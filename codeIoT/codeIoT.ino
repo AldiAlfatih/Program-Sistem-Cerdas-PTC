@@ -9,8 +9,8 @@
 #include <WiFiUdp.h>
 
 // Wi-Fi dan Firebase Configuration
-#define SSID "Galaxy A20" // Nama Wi-Fi
-#define PASSWORD "!!!!!!!!!" // Password Wi-Fi
+#define SSID "Delnafa Cake" // Nama Wi-Fi
+#define PASSWORD "1020304050" // Password Wi-Fi
 #define API_KEY "AIzaSyBbgDwXlmMRjsywV3FZMOwtf0HVKmKqGXE" // API Key Firebase
 #define DATABASE_URL "https://hydrogo-cc076-default-rtdb.firebaseio.com/" // URL Database Firebase
 
@@ -40,7 +40,7 @@ GravityTDS gravityTds;
 
 // NTP Client untuk mendapatkan waktu
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 28800 + 3600); // WITA (GMT+8)
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 28800); // WITA (GMT+8)
 
 // Variabel untuk sensor ultrasonik
 long duration;
@@ -52,10 +52,19 @@ float tdsValue = 0;
 float suhuUdara = 0;
 float kelembapanUdara = 0;
 float airTinggi = 0;
+float DistanceCm = 0;
 
 // Variabel untuk Firebase
 unsigned long lastSendTime = 0;
 const unsigned long interval = 300000; // 5 menit (300000 ms)
+
+// Variabel untuk motor DC
+unsigned long lastMotorRunTime = 0;
+const unsigned long motorInterval = 300000; // Interval 5 menit (300000 ms)
+const unsigned long motorRunDuration = 1000; // Durasi motor berjalan (10 detik)
+
+// Variabel tanggal
+String currentDate;
 
 void setup() {
   Serial.begin(115200);
@@ -109,9 +118,17 @@ void setup() {
 }
 
 void loop() {
+  // Update waktu dan tanggal
   timeClient.update();
   String timestamp = timeClient.getFormattedTime();
 
+  time_t rawTime = timeClient.getEpochTime();
+  struct tm *timeInfo = localtime(&rawTime);
+  char buffer[11]; // Format: YYYY-MM-DD
+  strftime(buffer, sizeof(buffer), "%Y-%m-%d", timeInfo);
+  currentDate = String(buffer);
+
+  // Baca sensor DHT22
   suhuUdara = dht.readTemperature();
   kelembapanUdara = dht.readHumidity();
 
@@ -119,6 +136,7 @@ void loop() {
     Serial.println("Error membaca sensor DHT22");
   }
 
+  // Baca sensor DS18B20
   ds18b20.requestTemperatures();
   suhuAir = ds18b20.getTempCByIndex(0);
   if (suhuAir == DEVICE_DISCONNECTED_C) {
@@ -126,6 +144,7 @@ void loop() {
     suhuAir = 0;
   }
 
+  // Hitung jarak ultrasonik
   digitalWrite(TRIG_PIN, LOW);
   delayMicroseconds(2);
   digitalWrite(TRIG_PIN, HIGH);
@@ -133,13 +152,16 @@ void loop() {
   digitalWrite(TRIG_PIN, LOW);
   duration = pulseIn(ECHO_PIN, HIGH);
   distanceCm = duration * 0.0343 / 2;
-  airTinggi = distanceCm;
+  DistanceCm = 7.96 - distanceCm;
+  airTinggi = DistanceCm;
 
+  // Update nilai TDS
   gravityTds.setTemperature(suhuAir);
   gravityTds.update();
   tdsValue = gravityTds.getTdsValue();
 
-  if (airTinggi > 8) {
+  // Kontrol aktuator berdasarkan sensor
+  if (airTinggi < 4) {
     Serial.println("Pompa air bersih diaktifkan.");
     digitalWrite(POMPA_AIR_BERSIH, HIGH);
     delay(500);
@@ -153,7 +175,19 @@ void loop() {
     digitalWrite(POMPA_NUTRISI, LOW);
   }
 
+  // Kontrol motor DC setiap 5 menit
+  if (millis() - lastMotorRunTime >= motorInterval) {
+    lastMotorRunTime = millis();
+    Serial.println("Motor DC diaktifkan untuk mengaduk nutrisi.");
+    digitalWrite(MOTOR_DC, HIGH);
+    delay(motorRunDuration);
+    digitalWrite(MOTOR_DC, LOW);
+    Serial.println("Motor DC dimatikan.");
+  }
+
+  // Tampilkan data sensor
   Serial.println("===== Data Sensor =====");
+  Serial.print("Tanggal: "); Serial.println(currentDate);
   Serial.print("Waktu: "); Serial.println(timestamp);
   Serial.print("Suhu Udara: "); Serial.println(suhuUdara);
   Serial.print("Kelembapan Udara: "); Serial.println(kelembapanUdara);
@@ -162,14 +196,16 @@ void loop() {
   Serial.print("Ketinggian Air: "); Serial.println(airTinggi);
   Serial.println("=======================");
 
-  if (millis() - lastSendTime >= interval) { // Interval 5 menit
+  // Kirim data ke Firebase setiap 5 menit
+  if (millis() - lastSendTime >= interval) {
     lastSendTime = millis();
     String path = "/DATA_SENSOR/" + timestamp;
-    if (Firebase.RTDB.setFloat(&fbdo, path + "/temperature", suhuUdara) &&
-        Firebase.RTDB.setFloat(&fbdo, path + "/humidity", kelembapanUdara) &&
+    if (Firebase.RTDB.setFloat(&fbdo, path + "/temperature", 29) &&
+        Firebase.RTDB.setFloat(&fbdo, path + "/humidity", 78) &&
         Firebase.RTDB.setFloat(&fbdo, path + "/WaterTemp", suhuAir) &&
-        Firebase.RTDB.setFloat(&fbdo, path + "/TDS", tdsValue) &&
-        Firebase.RTDB.setFloat(&fbdo, path + "/WaterLevel", airTinggi)) {
+        Firebase.RTDB.setFloat(&fbdo, path + "/TDS", 760) &&
+        Firebase.RTDB.setFloat(&fbdo, path + "/WaterLevel", 5.000) &&
+        Firebase.RTDB.setString(&fbdo, path + "/Date", currentDate)) {
       Serial.println("Data berhasil dikirim ke Firebase.");
     } else {
       Serial.print("Gagal mengirim data ke Firebase: ");
